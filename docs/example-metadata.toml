@@ -1,0 +1,21 @@
+# Example metadata.toml for a production folder inside workspace/
+#
+# Place this file (named metadata.toml by default) inside a production
+# folder, alongside the media files it references. Run:
+#
+#   python main.py workspace/<production-folder-name> --publisher peertube
+
+identifier = "2026-07-21-example-episode"
+title = "Example Episode Title"
+description = "Full show notes go here."
+creator = "Wotter"
+tags = ["podcast", "interview"]
+publication_date = 2026-07-21T18:00:00
+
+[[files]]
+path = "video/master.mp4"
+role = "primary"
+
+[[subtitles]]
+path = "subs/en.srt"
+language = "en"
