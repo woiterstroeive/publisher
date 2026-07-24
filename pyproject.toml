@@ -1,0 +1,23 @@
+[project]
+name = "publisher-backend"
+version = "1.0.0"
+description = "Modular publishing backend for distributing media productions to multiple publishing platforms."
+requires-python = ">=3.11"
+readme = "README.md"
+dependencies = [
+    "requests>=2.32",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["metadata", "models", "publishers"]
+py-modules = ["config", "main"]

@@ -1,0 +1,28 @@
+# Credentials and local configuration
+.env
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Runtime data and media
+workspace/
+published/
+failed/
+logs/
+
+# Generated publication state
+publication-result.json
+*.tmp
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
