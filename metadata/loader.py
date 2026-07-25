@@ -53,9 +53,7 @@ def load_metadata(metadata_path: Path) -> dict[str, Any]:
     try:
         raw_bytes = metadata_path.read_bytes()
     except OSError as error:
-        raise MetadataLoadError(
-            f"Could not read metadata file: {metadata_path}"
-        ) from error
+        raise MetadataLoadError(f"Could not read metadata file: {metadata_path}") from error
 
     try:
         parsed = tomllib.loads(raw_bytes.decode("utf-8"))
@@ -64,9 +62,7 @@ def load_metadata(metadata_path: Path) -> dict[str, Any]:
             f"Could not parse metadata file as TOML: {metadata_path}"
         ) from error
     except UnicodeDecodeError as error:
-        raise MetadataLoadError(
-            f"Metadata file is not valid UTF-8: {metadata_path}"
-        ) from error
+        raise MetadataLoadError(f"Metadata file is not valid UTF-8: {metadata_path}") from error
 
     logger.debug("Loaded metadata from %s", metadata_path)
     return parsed

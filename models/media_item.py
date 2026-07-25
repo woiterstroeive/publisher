@@ -110,6 +110,4 @@ class MediaItem:
         for media_file in self.files:
             if media_file.role == "primary":
                 return media_file
-        raise ValueError(
-            f"MediaItem '{self.identifier}' has no file with role 'primary'."
-        )
+        raise ValueError(f"MediaItem '{self.identifier}' has no file with role 'primary'.")

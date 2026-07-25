@@ -45,9 +45,7 @@ class MetadataValidationError(Exception):
 
     def __init__(self, errors: list[str]) -> None:
         self.errors = errors
-        message = "Metadata validation failed:\n" + "\n".join(
-            f"  - {error}" for error in errors
-        )
+        message = "Metadata validation failed:\n" + "\n".join(f"  - {error}" for error in errors)
         super().__init__(message)
 
 
@@ -79,15 +77,13 @@ def validate_metadata(
 
     identifier = _validate_non_empty_string(raw_metadata, "identifier", errors)
     title = _validate_non_empty_string(raw_metadata, "title", errors)
-    description = _validate_string(raw_metadata, "description", errors)
+    description = _validate_non_empty_string(raw_metadata, "description", errors)
     creator = _validate_non_empty_string(raw_metadata, "creator", errors)
     tags = _validate_string_list(raw_metadata, "tags", errors, required=False)
     files = _validate_files(raw_metadata, base_dir, errors)
     thumbnail = _validate_optional_path(raw_metadata, "thumbnail", base_dir, errors)
     subtitles = _validate_subtitles(raw_metadata, base_dir, errors)
-    publication_date = _validate_optional_datetime(
-        raw_metadata, "publication_date", errors
-    )
+    publication_date = _validate_optional_datetime(raw_metadata, "publication_date", errors)
 
     if errors:
         raise MetadataValidationError(errors)
@@ -111,9 +107,7 @@ def _check_required_fields(raw_metadata: dict[str, Any], errors: list[str]) -> N
             errors.append(f"Missing required field: '{field_name}'")
 
 
-def _validate_string(
-    raw_metadata: dict[str, Any], key: str, errors: list[str]
-) -> str:
+def _validate_string(raw_metadata: dict[str, Any], key: str, errors: list[str]) -> str:
     value = raw_metadata.get(key, "")
     if not isinstance(value, str):
         errors.append(f"Field '{key}' must be a string, got {type(value).__name__}")
@@ -121,13 +115,12 @@ def _validate_string(
     return value
 
 
-def _validate_non_empty_string(
-    raw_metadata: dict[str, Any], key: str, errors: list[str]
-) -> str:
+def _validate_non_empty_string(raw_metadata: dict[str, Any], key: str, errors: list[str]) -> str:
     value = _validate_string(raw_metadata, key, errors)
-    if value == "" and key in raw_metadata:
-        errors.append(f"Field '{key}' must not be empty")
-    return value
+    normalized = value.strip()
+    if normalized == "" and key in raw_metadata:
+        errors.append(f"Field '{key}' must not be blank")
+    return normalized
 
 
 def _validate_string_list(
@@ -146,12 +139,24 @@ def _validate_string_list(
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         errors.append(f"Field '{key}' must be a list of strings")
         return []
-    return value
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        tag = item.strip()
+        if tag and tag not in seen:
+            normalized.append(tag)
+            seen.add(tag)
+    return normalized
 
 
 def _resolve_path(raw_path: str, base_dir: Path) -> Path:
     path = Path(raw_path)
-    return path if path.is_absolute() else base_dir / path
+    return (path if path.is_absolute() else base_dir / path).resolve()
+
+
+def _is_within_base(path: Path, base_dir: Path) -> bool:
+    """Return whether a resolved asset path is inside its production directory."""
+    return path.is_relative_to(base_dir.resolve())
 
 
 def _validate_files(
@@ -167,13 +172,11 @@ def _validate_files(
         return []
 
     media_files: list[MediaFile] = []
-    has_primary = False
+    primary_count = 0
 
     for index, entry in enumerate(raw_files):
         if not isinstance(entry, dict) or "path" not in entry:
-            errors.append(
-                f"files[{index}] must be a table with at least a 'path' key"
-            )
+            errors.append(f"files[{index}] must be a table with at least a 'path' key")
             continue
 
         raw_path = entry["path"]
@@ -187,17 +190,31 @@ def _validate_files(
             continue
 
         resolved_path = _resolve_path(raw_path, base_dir)
+        if not _is_within_base(resolved_path, base_dir):
+            errors.append(f"files[{index}].path is outside production directory: {resolved_path}")
+            continue
         if not resolved_path.exists():
             errors.append(f"files[{index}].path does not exist: {resolved_path}")
             continue
 
+        if not resolved_path.is_file():
+            errors.append(f"files[{index}].path is not a file: {resolved_path}")
+            continue
+
         if role == "primary":
-            has_primary = True
+            primary_count += 1
+            try:
+                if resolved_path.stat().st_size == 0:
+                    errors.append(f"files[{index}].path primary file is empty: {resolved_path}")
+            except OSError as error:
+                errors.append(f"files[{index}].path could not be inspected: {error}")
 
         media_files.append(MediaFile(path=resolved_path, role=role))
 
-    if media_files and not has_primary:
-        errors.append("At least one entry in 'files' must have role 'primary'")
+    if media_files and primary_count != 1:
+        errors.append(
+            f"Exactly one entry in 'files' must have role 'primary'; found {primary_count}"
+        )
 
     return media_files
 
@@ -218,9 +235,7 @@ def _validate_subtitles(
 
     for index, entry in enumerate(raw_subtitles):
         if not isinstance(entry, dict) or "path" not in entry or "language" not in entry:
-            errors.append(
-                f"subtitles[{index}] must be a table with 'path' and 'language' keys"
-            )
+            errors.append(f"subtitles[{index}] must be a table with 'path' and 'language' keys")
             continue
 
         raw_path = entry["path"]
@@ -235,8 +250,17 @@ def _validate_subtitles(
             continue
 
         resolved_path = _resolve_path(raw_path, base_dir)
+        if not _is_within_base(resolved_path, base_dir):
+            errors.append(
+                f"subtitles[{index}].path is outside production directory: {resolved_path}"
+            )
+            continue
         if not resolved_path.exists():
             errors.append(f"subtitles[{index}].path does not exist: {resolved_path}")
+            continue
+
+        if not resolved_path.is_file():
+            errors.append(f"subtitles[{index}].path is not a file: {resolved_path}")
             continue
 
         subtitles.append(Subtitle(path=resolved_path, language=language))
@@ -259,8 +283,15 @@ def _validate_optional_path(
         return None
 
     resolved_path = _resolve_path(value, base_dir)
+    if not _is_within_base(resolved_path, base_dir):
+        errors.append(f"Field '{key}' points outside production directory: {resolved_path}")
+        return None
     if not resolved_path.exists():
         errors.append(f"Field '{key}' points to a file that does not exist: {resolved_path}")
+        return None
+
+    if not resolved_path.is_file():
+        errors.append(f"Field '{key}' is not a file: {resolved_path}")
         return None
 
     return resolved_path
@@ -278,10 +309,10 @@ def _validate_optional_datetime(
         return value
 
     if isinstance(value, date):
-        return datetime(value.year, value.month, value.day)
+        # A TOML date intentionally carries no timezone information.
+        return datetime(value.year, value.month, value.day)  # noqa: DTZ001
 
     errors.append(
-        f"Field '{key}' must be a TOML date or datetime value, "
-        f"got {type(value).__name__}"
+        f"Field '{key}' must be a TOML date or datetime value, got {type(value).__name__}"
     )
     return None

@@ -5,6 +5,7 @@ description = "Modular publishing backend for distributing media productions to 
 requires-python = ">=3.11"
 readme = "README.md"
 dependencies = [
+    "filelock>=3.20",
     "requests>=2.32",
     "python-dotenv>=1.0",
 ]
@@ -12,6 +13,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "ruff>=0.12",
 ]
 
 [build-system]
@@ -21,3 +23,10 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = ["metadata", "models", "publishers"]
 py-modules = ["config", "main"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100

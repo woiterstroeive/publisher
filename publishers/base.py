@@ -4,7 +4,7 @@ publishers/base.py
 Defines the abstract interface every publisher must implement.
 
 Responsibility:
-    Establish the common contract (connect, publish, verify,
+    Establish the common contract (prepare, connect, publish, verify,
     get_public_url, disconnect) that all publisher modules satisfy,
     so the rest of the backend never needs to know which specific
     platform it is talking to.
@@ -18,12 +18,27 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Self
 
 from models.media_item import MediaItem
 from models.publication_result import PublicationResult
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class LocalFileDescriptor:
+    """Platform-neutral identity of the primary bytes selected for publication."""
+
+    name: str
+    size: int
+    sha256: str
+
+    def to_record(self) -> dict[str, str | int]:
+        """Return the JSON-compatible durable representation."""
+        return {"name": self.name, "size": self.size, "sha256": self.sha256}
 
 
 class PublisherError(Exception):
@@ -36,6 +51,18 @@ class PublisherConnectionError(PublisherError):
 
 class PublisherPublishError(PublisherError):
     """Raised when a publisher fails to publish a MediaItem."""
+
+
+class PublisherTemporaryError(PublisherError):
+    """Raised for a safe-to-retry failure before a remote write is attempted."""
+
+
+class PublisherOutcomeUnknownError(PublisherPublishError):
+    """Raised when a remote write may have succeeded but was not confirmed."""
+
+    def __init__(self, message: str, *, remote_id: str) -> None:
+        super().__init__(message)
+        self.remote_id = remote_id
 
 
 class Publisher(ABC):
@@ -51,7 +78,8 @@ class Publisher(ABC):
     Concrete publishers are expected to:
         1. Define the `publisher_name` class attribute.
         2. Implement connect(), publish(), verify(), get_public_url(),
-           and disconnect().
+           and disconnect(); optionally override prepare() when local
+           byte identity must be bound before remote work.
         3. Translate their own platform's API and errors into
            PublicationResult / PublisherError, so nothing
            platform-specific leaks past this boundary.
@@ -76,6 +104,16 @@ class Publisher(ABC):
     #: "peertube". Used to populate PublicationResult.publisher and
     #: for logging. Must be defined by every concrete subclass.
     publisher_name: str
+
+    def prepare(
+        self,
+        media_item: MediaItem,
+        descriptor: LocalFileDescriptor,
+        *,
+        reconcile_only: bool = False,
+    ) -> None:
+        """Bind durable local context before remote lifecycle work begins."""
+        return
 
     @abstractmethod
     def connect(self) -> None:
@@ -193,10 +231,10 @@ class Publisher(ABC):
             remote_id=remote_id,
             url=url,
             message=message,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         )
 
-    def __enter__(self) -> "Publisher":
+    def __enter__(self) -> Self:
         self.connect()
         return self
 

@@ -58,7 +58,7 @@ class PeerTubeConfig:
     privacy: int = 1
 
     @classmethod
-    def from_env(cls) -> "PeerTubeConfig":
+    def from_env(cls) -> PeerTubeConfig:
         """
         Build and validate PeerTubeConfig from the process environment.
 
@@ -171,8 +171,7 @@ class PeerTubePublisher(Publisher):
             access_token = token_data["access_token"]
         except (requests.RequestException, KeyError, ValueError) as error:
             raise PublisherConnectionError(
-                f"PeerTube authentication failed for user "
-                f"'{self._config.username}': {error}"
+                f"PeerTube authentication failed for user '{self._config.username}': {error}"
             ) from error
 
         session.headers.update({"Authorization": f"Bearer {access_token}"})
@@ -201,9 +200,7 @@ class PeerTubePublisher(Publisher):
                 first.
         """
         if self._session is None:
-            raise PublisherConnectionError(
-                "PeerTubePublisher.publish() called before connect()."
-            )
+            raise PublisherConnectionError("PeerTubePublisher.publish() called before connect().")
 
         try:
             primary_file = media_item.primary_file()
@@ -252,7 +249,7 @@ class PeerTubePublisher(Publisher):
                 url=None,
                 message=(
                     f"PeerTube rejected upload for '{media_item.identifier}': "
-                    f"HTTP {response.status_code} - {response.text[:500]}"
+                    f"HTTP {response.status_code}"
                 ),
             )
 
@@ -264,15 +261,11 @@ class PeerTubePublisher(Publisher):
                 success=False,
                 remote_id=None,
                 url=None,
-                message=(
-                    f"PeerTube upload succeeded but response was unexpected: {error}"
-                ),
+                message=(f"PeerTube upload succeeded but response was unexpected: {error}"),
             )
 
         public_url = f"{self._config.instance_url}/w/{video_uuid}"
-        logger.info(
-            "Published '%s' to PeerTube as %s", media_item.identifier, video_uuid
-        )
+        logger.info("Published '%s' to PeerTube as %s", media_item.identifier, video_uuid)
 
         return self.build_result(
             success=True,
@@ -295,9 +288,7 @@ class PeerTubePublisher(Publisher):
             because the original publish() failed).
         """
         if self._session is None:
-            raise PublisherConnectionError(
-                "PeerTubePublisher.verify() called before connect()."
-            )
+            raise PublisherConnectionError("PeerTubePublisher.verify() called before connect().")
 
         if not result.remote_id:
             return False
@@ -343,6 +334,4 @@ class PeerTubePublisher(Publisher):
             self._session.close()
             self._session = None
             self._access_token = None
-            logger.debug(
-                "Disconnected from PeerTube instance %s", self._config.instance_url
-            )
+            logger.debug("Disconnected from PeerTube instance %s", self._config.instance_url)
