@@ -404,65 +404,84 @@ class InternetArchivePublisher(Publisher):
                     f"'{media_item.identifier}'."
                 ) from error
 
-            remote_identifier = remote_data.get("metadata", {}).get("identifier")
-            if remote_identifier is None:
+            if not isinstance(remote_data, dict):
+                # Confirmed real-world/documented shape: a genuinely
+                # nonexistent item returns HTTP 200 with an empty JSON
+                # *object* ({}), never a list or any other JSON type.
+                # Any other non-dict shape here is not a known "does not
+                # exist" signal and must fail safely rather than be
+                # assumed nonexistent.
                 raise PublisherPublishError(
-                    "Internet Archive returned successful metadata with a missing identifier "
-                    f"while checking '{media_item.identifier}'."
-                )
-            if remote_identifier != media_item.identifier:
-                raise PublisherPublishError(
-                    "Internet Archive returned metadata for unexpected identifier "
-                    f"'{remote_identifier}' while checking '{media_item.identifier}'."
+                    "Internet Archive returned an unexpected metadata shape "
+                    f"(expected a JSON object) while checking '{media_item.identifier}'."
                 )
 
-            if not _file_matches_descriptor(primary_file.path, prepared_file):
-                return self.build_result(
-                    success=False,
-                    remote_id=media_item.identifier,
-                    url=None,
-                    message="Primary file changed after durable snapshot; refusing to resume.",
-                )
+            item_exists = bool(remote_data)
 
-            if remote_identifier == media_item.identifier:
-                remote_file = next(
-                    (
-                        entry
-                        for entry in remote_data.get("files", [])
-                        if entry.get("name") == file_name and entry.get("source") == "original"
-                    ),
-                    None,
-                )
-                if remote_file is not None:
-                    remote_size = remote_file.get("size")
-                    if remote_size in (None, ""):
-                        return self.build_result(
-                            success=True,
-                            remote_id=media_item.identifier,
-                            url=f"{_DETAILS_ENDPOINT}/{media_item.identifier}",
-                            message=(
-                                "Matching original filename is already present on Internet "
-                                "Archive and is awaiting exact size verification."
-                            ),
-                        )
-                    if str(remote_size) == str(file_size):
-                        public_url = f"{_DETAILS_ENDPOINT}/{media_item.identifier}"
-                        return self.build_result(
-                            success=True,
-                            remote_id=media_item.identifier,
-                            url=public_url,
-                            message="Matching file already present on Internet Archive.",
-                        )
-                return self.build_result(
-                    success=False,
-                    remote_id=media_item.identifier,
-                    url=f"{_DETAILS_ENDPOINT}/{media_item.identifier}",
-                    message=(
-                        "Internet Archive identifier already exists but does not "
-                        "contain a matching original filename and size; refusing "
-                        "to overwrite it."
-                    ),
-                )
+            if item_exists:
+                remote_identifier = remote_data.get("metadata", {}).get("identifier")
+                if remote_identifier is None:
+                    raise PublisherPublishError(
+                        "Internet Archive returned successful metadata with a missing identifier "
+                        f"while checking '{media_item.identifier}'."
+                    )
+                if remote_identifier != media_item.identifier:
+                    raise PublisherPublishError(
+                        "Internet Archive returned metadata for unexpected identifier "
+                        f"'{remote_identifier}' while checking '{media_item.identifier}'."
+                    )
+
+                if not _file_matches_descriptor(primary_file.path, prepared_file):
+                    return self.build_result(
+                        success=False,
+                        remote_id=media_item.identifier,
+                        url=None,
+                        message="Primary file changed after durable snapshot; refusing to resume.",
+                    )
+
+                if remote_identifier == media_item.identifier:
+                    remote_file = next(
+                        (
+                            entry
+                            for entry in remote_data.get("files", [])
+                            if entry.get("name") == file_name and entry.get("source") == "original"
+                        ),
+                        None,
+                    )
+                    if remote_file is not None:
+                        remote_size = remote_file.get("size")
+                        if remote_size in (None, ""):
+                            return self.build_result(
+                                success=True,
+                                remote_id=media_item.identifier,
+                                url=f"{_DETAILS_ENDPOINT}/{media_item.identifier}",
+                                message=(
+                                    "Matching original filename is already present on Internet "
+                                    "Archive and is awaiting exact size verification."
+                                ),
+                            )
+                        if str(remote_size) == str(file_size):
+                            public_url = f"{_DETAILS_ENDPOINT}/{media_item.identifier}"
+                            return self.build_result(
+                                success=True,
+                                remote_id=media_item.identifier,
+                                url=public_url,
+                                message="Matching file already present on Internet Archive.",
+                            )
+                    return self.build_result(
+                        success=False,
+                        remote_id=media_item.identifier,
+                        url=f"{_DETAILS_ENDPOINT}/{media_item.identifier}",
+                        message=(
+                            "Internet Archive identifier already exists but does not "
+                            "contain a matching original filename and size; refusing "
+                            "to overwrite it."
+                        ),
+                    )
+            # else: remote_data == {} -> a genuine, documented "item does
+            # not exist" response. Fall through below (same path as an
+            # HTTP 404) to the reconcile-only / first-PUT logic, which is
+            # unchanged and still gates whether writing is permitted.
 
         if media_item.identifier in self._reconcile_only_identifiers:
             return self.build_result(

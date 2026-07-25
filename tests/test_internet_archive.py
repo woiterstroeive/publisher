@@ -433,12 +433,77 @@ def test_preflight_refuses_metadata_for_different_identifier(tmp_path: Path) -> 
     assert session.put_calls == []
 
 
-def test_preflight_refuses_success_response_without_identifier(tmp_path: Path) -> None:
+def test_nonexistent_item_real_shape_proceeds_to_put_when_writing_permitted(
+    tmp_path: Path,
+) -> None:
+    """Regression test for the canary failure.
+
+    Confirmed real Internet Archive behaviour: GET .../metadata/{id} for a
+    genuinely nonexistent item returns HTTP 200 with body {} (an empty
+    JSON object) -- not HTTP 404, and not any 'missing identifier' error
+    shape. This must be treated the same as the existing 404 fallback:
+    the item does not exist, so publishing may proceed to the first PUT.
+    """
     session = FakeSession()
-    session.get_responses = [FakeResponse(json_data={})]
+    session.get_responses = [FakeResponse(status_code=200, json_data={})]
+    publisher = _publisher(session)
+
+    result = publisher.publish(_media_item(tmp_path))
+
+    assert result.success is True
+    assert session.put_calls != []
+
+
+def test_nonexistent_item_real_shape_never_starts_put_when_reconcile_only(
+    tmp_path: Path,
+) -> None:
+    """Same real 'does not exist' shape (HTTP 200, body {}), but under a
+    protected reconcile-only state -- must refuse to upload, exactly like
+    the existing HTTP 404 reconcile-only test, and must never PUT."""
+    session = FakeSession()
+    session.get_responses = [FakeResponse(status_code=200, json_data={})]
+    publisher = _publisher(session)
+    item = _media_item(tmp_path)
+    descriptor = LocalFileDescriptor(
+        name="video.mkv",
+        size=5,
+        sha256="721c9525ade2ea8903d343ef25cf68b9bf4ab0aad56bb7b01fbe48d09bc7fcf4",
+    )
+    publisher.prepare(item, descriptor, reconcile_only=True)
+
+    result = publisher.publish(item)
+
+    assert result.success is True
+    assert result.remote_id == "video-001"
+    assert session.put_calls == []
+
+
+def test_malformed_nonempty_response_without_identifier_fails_safely(
+    tmp_path: Path,
+) -> None:
+    """A non-empty JSON object that is missing the expected 'metadata'
+    structure is NOT the documented 'does not exist' shape ({}) and must
+    not be treated as one -- it must still fail safely rather than
+    proceeding to PUT."""
+    session = FakeSession()
+    session.get_responses = [FakeResponse(json_data={"created": 123456, "files": []})]
     publisher = _publisher(session)
 
     with pytest.raises(ia_module.PublisherPublishError, match="missing identifier"):
+        publisher.publish(_media_item(tmp_path))
+
+    assert session.put_calls == []
+
+
+def test_unexpected_non_object_metadata_shape_fails_safely(tmp_path: Path) -> None:
+    """A response that is valid JSON but not a JSON object at all (e.g. a
+    list) is neither the documented 'does not exist' shape nor a valid
+    existing-item shape -- must fail safely, not be treated as either."""
+    session = FakeSession()
+    session.get_responses = [FakeResponse(json_data=[{"unexpected": "shape"}])]  # type: ignore[arg-type]
+    publisher = _publisher(session)
+
+    with pytest.raises(ia_module.PublisherPublishError, match="unexpected metadata shape"):
         publisher.publish(_media_item(tmp_path))
 
     assert session.put_calls == []
