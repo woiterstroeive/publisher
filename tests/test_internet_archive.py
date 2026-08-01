@@ -387,7 +387,7 @@ def test_existing_file_without_remote_size_is_resumed_without_upload(
         ),
     ]
     publisher = _publisher(session)
-    monkeypatch.setattr(ia_module, "_VERIFY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(ia_module, "_VERIFY_DELAYS_SECONDS", (0,))
 
     result = publisher.publish(_media_item(tmp_path))
 
@@ -543,11 +543,184 @@ def test_verify_retries_until_exact_original_file_is_visible(
     ]
     publisher = _publisher(session)
     publisher._expected_files["video-001"] = ("video.mkv", 5)
-    monkeypatch.setattr(ia_module, "_VERIFY_ATTEMPTS", 2, raising=False)
-    monkeypatch.setattr(ia_module, "_VERIFY_DELAY_SECONDS", 0, raising=False)
+    monkeypatch.setattr(ia_module, "_VERIFY_DELAYS_SECONDS", (0, 0))
 
     assert publisher.verify(_result()) is True
     assert len(session.get_calls) == 2
+
+
+def test_verify_uses_monotonic_deadlines_without_cumulative_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class Clock:
+        def __init__(self) -> None:
+            self.now = 100.0
+            self.sleeps: list[float] = []
+
+        def monotonic(self) -> float:
+            return self.now
+
+        def sleep(self, seconds: float) -> None:
+            self.sleeps.append(seconds)
+            self.now += seconds
+
+    clock = Clock()
+
+    class SlowSession(FakeSession):
+        def get(self, url: str, **kwargs: Any) -> FakeResponse:
+            response = super().get(url, **kwargs)
+            clock.now += 5
+            return response
+
+    session = SlowSession()
+    session.get_responses = [FakeResponse() for _ in range(4)]
+    publisher = _publisher(session)
+    publisher._expected_files["video-001"] = ("video.mkv", 5)
+    monkeypatch.setattr(ia_module, "_VERIFY_DELAYS_SECONDS", (0, 120, 300, 600))
+    monkeypatch.setattr(ia_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(ia_module.time, "sleep", clock.sleep)
+    caplog.set_level("INFO", logger=ia_module.logger.name)
+
+    assert publisher.verify(_result()) is False
+    assert clock.sleeps == [115.0, 295.0, 595.0]
+    assert len(session.get_calls) == 4
+    delayed_logs = [
+        record.message
+        for record in caplog.records
+        if "before verification attempt" in record.message
+    ]
+    assert delayed_logs == [
+        "Waiting 115 seconds before verification attempt 2/4 for video-001.",
+        "Waiting 295 seconds before verification attempt 3/4 for video-001.",
+        "Waiting 595 seconds before verification attempt 4/4 for video-001.",
+    ]
+
+
+def test_verify_returns_on_immediate_reconciliation_without_sleep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = FakeSession()
+    session.get_responses = [
+        FakeResponse(
+            json_data={
+                "metadata": {"identifier": "video-001"},
+                "files": [{"name": "video.mkv", "size": "5", "source": "original"}],
+            }
+        )
+    ]
+    publisher = _publisher(session)
+    publisher._expected_files["video-001"] = ("video.mkv", 5)
+    sleeps: list[float] = []
+    monkeypatch.setattr(ia_module.time, "sleep", sleeps.append)
+
+    assert publisher.verify(_result()) is True
+    assert sleeps == []
+    assert len(session.get_calls) == 1
+
+
+def test_verify_timeout_remains_unverified_without_becoming_upload_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = FakeSession()
+    session.get_responses = [requests.Timeout("metadata timeout") for _ in range(4)]
+    publisher = _publisher(session)
+    publisher._expected_files["video-001"] = ("video.mkv", 5)
+    monkeypatch.setattr(ia_module, "_VERIFY_DELAYS_SECONDS", (0, 0, 0, 0))
+
+    assert publisher.verify(_result()) is False
+    assert len(session.get_calls) == 4
+    assert session.put_calls == []
+
+
+def test_verify_interruption_during_wait_is_propagated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = FakeSession()
+    session.get_responses = [FakeResponse()]
+    publisher = _publisher(session)
+    publisher._expected_files["video-001"] = ("video.mkv", 5)
+    monkeypatch.setattr(ia_module, "_VERIFY_DELAYS_SECONDS", (0, 120))
+    monkeypatch.setattr(ia_module.time, "monotonic", lambda: 0.0)
+
+    def interrupt_wait(_seconds: float) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(ia_module.time, "sleep", interrupt_wait)
+
+    with pytest.raises(KeyboardInterrupt):
+        publisher.verify(_result())
+
+    assert len(session.get_calls) == 1
+    assert session.put_calls == []
+
+
+def test_verify_does_not_wait_without_remote_id_or_after_non_retryable_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = FakeSession()
+    publisher = _publisher(session)
+    publisher._expected_files["video-001"] = ("video.mkv", 5)
+    sleeps: list[float] = []
+    monkeypatch.setattr(ia_module.time, "sleep", sleeps.append)
+    no_remote_id = PublicationResult(
+        success=True,
+        publisher="internet_archive",
+        remote_id=None,
+        url=None,
+        message="accepted without remote id",
+        timestamp=datetime.now(UTC),
+    )
+    non_retryable = PublicationResult(
+        success=False,
+        publisher="internet_archive",
+        remote_id="video-001",
+        url=None,
+        message="definitive failure",
+        timestamp=datetime.now(UTC),
+    )
+
+    assert publisher.verify(no_remote_id) is False
+    assert publisher.verify(non_retryable) is False
+    assert session.get_calls == []
+    assert sleeps == []
+
+
+def test_protected_reconciliation_verifies_immediately_without_second_put(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    matching_metadata = {
+        "metadata": {"identifier": "video-001"},
+        "files": [{"name": "video.mkv", "size": "5", "source": "original"}],
+    }
+    session = FakeSession()
+    session.get_responses = [
+        FakeResponse(json_data=matching_metadata),
+        FakeResponse(json_data=matching_metadata),
+    ]
+    publisher = _publisher(session)
+    item = _media_item(tmp_path)
+    publisher.prepare(
+        item,
+        LocalFileDescriptor(
+            name="video.mkv",
+            size=5,
+            sha256="721c9525ade2ea8903d343ef25cf68b9bf4ab0aad56bb7b01fbe48d09bc7fcf4",
+        ),
+        reconcile_only=True,
+    )
+    monkeypatch.setattr(
+        ia_module.time,
+        "sleep",
+        lambda _seconds: pytest.fail("successful reconciliation must not wait"),
+    )
+
+    result = publisher.publish(item)
+
+    assert result.success is True
+    assert publisher.verify(result) is True
+    assert len(session.get_calls) == 2
+    assert session.put_calls == []
 
 
 def test_verify_rejects_metadata_for_different_identifier(
@@ -564,7 +737,7 @@ def test_verify_rejects_metadata_for_different_identifier(
     ]
     publisher = _publisher(session)
     publisher._expected_files["video-001"] = ("video.mkv", 5)
-    monkeypatch.setattr(ia_module, "_VERIFY_ATTEMPTS", 1)
+    monkeypatch.setattr(ia_module, "_VERIFY_DELAYS_SECONDS", (0,))
 
     assert publisher.verify(_result()) is False
 

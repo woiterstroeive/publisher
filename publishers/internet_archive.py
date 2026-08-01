@@ -49,8 +49,7 @@ logger = logging.getLogger(__name__)
 
 _REQUEST_TIMEOUT_SECONDS = 60
 _UPLOAD_TIMEOUT_SECONDS = 7200
-_VERIFY_ATTEMPTS = 7
-_VERIFY_DELAY_SECONDS = 10
+_VERIFY_DELAYS_SECONDS = (0, 120, 300, 600)
 _TRANSIENT_HTTP_STATUSES = frozenset({408, 429})
 _IDENTIFIER_LOCK_DIRECTORY = Path(tempfile.gettempdir()) / "publisher-backend-ia-locks"
 
@@ -613,7 +612,7 @@ class InternetArchivePublisher(Publisher):
                 "InternetArchivePublisher.verify() called before connect()."
             )
 
-        if not result.remote_id:
+        if not result.success or not result.remote_id:
             return False
 
         expected_file = self._expected_files.get(result.remote_id)
@@ -625,7 +624,23 @@ class InternetArchivePublisher(Publisher):
             return False
 
         expected_name, expected_size = expected_file
-        for attempt in range(1, _VERIFY_ATTEMPTS + 1):
+        verification_started = time.monotonic()
+        next_check_at = verification_started
+        total_attempts = len(_VERIFY_DELAYS_SECONDS)
+        for attempt, delay_seconds in enumerate(_VERIFY_DELAYS_SECONDS, start=1):
+            next_check_at += delay_seconds
+            remaining_delay = next_check_at - time.monotonic()
+            if attempt > 1:
+                logger.info(
+                    "Waiting %.0f seconds before verification attempt %d/%d for %s.",
+                    max(0, remaining_delay),
+                    attempt,
+                    total_attempts,
+                    result.remote_id,
+                )
+            if remaining_delay > 0:
+                time.sleep(remaining_delay)
+
             try:
                 response = self._session.get(
                     f"{_METADATA_ENDPOINT}/{result.remote_id}",
@@ -635,7 +650,7 @@ class InternetArchivePublisher(Publisher):
                 logger.warning(
                     "Internet Archive verification attempt %d/%d failed for %s: %s",
                     attempt,
-                    _VERIFY_ATTEMPTS,
+                    total_attempts,
                     result.remote_id,
                     error,
                 )
@@ -657,9 +672,6 @@ class InternetArchivePublisher(Publisher):
                     )
                     if exact_file_present:
                         return True
-
-            if attempt < _VERIFY_ATTEMPTS:
-                time.sleep(_VERIFY_DELAY_SECONDS)
 
         return False
 

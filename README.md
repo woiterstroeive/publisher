@@ -107,9 +107,12 @@ IA PUT requests include `x-archive-keep-old-version: 1`, matching the official I
 damage-limiting behavior. This preserves a prior remote file version if an external writer
 clobbers the same key, but it is not a replacement for locking or preflight reconciliation.
 
-Verification is distinct from upload acceptance. It polls a bounded number of times and
-requires the exact remote identifier, expected original filename, and byte size. Merely
-seeing any derived IA file is not sufficient.
+Verification is distinct from upload acceptance. It checks immediately, then—when still
+unverified—at cumulative times of approximately 2, 7, and 17 minutes using monotonic deadlines.
+Every check requires the exact remote identifier, expected original filename, and byte size.
+Merely seeing any derived IA file is not sufficient. A later protected reconciliation performs
+the immediate check first and returns without delay when the exact original is already visible;
+it never authorizes another upload.
 
 Before connect/upload, orchestration binds the filename, byte size, and SHA-256 written to the
 sidecar to the publisher. IA validates that identity on existing-item resume. For a new PUT it
